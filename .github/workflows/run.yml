@@ -2,68 +2,123 @@ name: generate-ebook
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 13 * * *"  # daily at 13:00 UTC (9:00am ET)
+    - cron: "0 13 * * *"   # daily 13:00 UTC (09:00 ET)
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Generate ebook via HF Inference API
-        env:
-          HF_API_TOKEN: ${{ secrets.HF_API_TOKEN }}
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install deps (Transformers CPU + FPDF)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "transformers>=4.44" "torch>=2.3" tqdm fpdf requests
+
+      - name: Generate ebook text (no API)
         run: |
           python - <<'PY'
-          import os, json, time, datetime, requests, sys
-          TOPIC = "Mindfulness for Beginners"
-          MODEL_ID = os.environ.get("HF_MODEL_ID","distilgpt2")
-          API_URL = f"https://api-inference.huggingface.co/models/{MODEL_ID}"
-          token = os.environ.get("HF_API_TOKEN")
-          if not token:
-              print("No HF_API_TOKEN set"); sys.exit(1)
-          headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+          import datetime
+          from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+
+          TOPIC = "Mindfulness for Beginners"      # <- change topics later
+          MODEL_ID = "distilgpt2"                  # small & fast on CPU
+
+          print(f"→ Loading model: {MODEL_ID}")
+          tok = AutoTokenizer.from_pretrained(MODEL_ID)
+          mdl = AutoModelForCausalLM.from_pretrained(MODEL_ID)
+          gen = pipeline("text-generation", model=mdl, tokenizer=tok, device=-1)
+
           prompt = (
               f"Write a concise, beginner-friendly short ebook about: {TOPIC}.\n"
               "Include a short intro, 4–6 brief chapters (1–2 paragraphs each),\n"
               "and an actionable checklist at the end.\n"
           )
-          payload = {
-              "inputs": prompt,
-              "parameters": {"max_new_tokens": 400},
-              "options": {"wait_for_model": True}
-          }
-          for attempt in range(1,6):
-              print(f"→ Attempt {attempt} to {API_URL}")
-              resp = requests.post(API_URL, headers=headers, data=json.dumps(payload), timeout=120)
-              if resp.status_code == 200:
-                  try:
-                      data = resp.json()
-                      if isinstance(data, list) and data and "generated_text" in data[0]:
-                          text = data[0]["generated_text"]
-                      else:
-                          text = resp.text
-                      ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                      fname = f"ebook_{ts}.txt"
-                      with open(fname, "w", encoding="utf-8") as f:
-                          f.write(text)
-                      print("✅ Saved", fname)
-                      break
-                  except Exception as e:
-                      print("Parse error:", e, "| body head:", resp.text[:200])
-                      time.sleep(8)
-              elif resp.status_code in (503, 504, 524, 408):
-                  print("Model loading or timeout; retrying...")
-                  time.sleep(10)
-              elif resp.status_code in (401,403):
-                  print("Auth error:", resp.text); sys.exit(1)
-              else:
-                  print(f"HTTP {resp.status_code}: {resp.text[:200]}")
-                  time.sleep(8)
-          else:
-              sys.exit("Failed after retries.")
+
+          print("→ Generating…")
+          out = gen(prompt, max_new_tokens=400, do_sample=True, temperature=0.8, top_p=0.95)
+          text = out[0]["generated_text"]
+
+          ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+          fname = f"ebook_{ts}.txt"
+          with open(fname, "w", encoding="utf-8") as f:
+              f.write(text)
+          print("✅ Saved", fname)
           PY
 
-      - name: Upload artifact (ebook file)
+      - name: Convert TXT → PDF
+        run: |
+          python - <<'PY'
+          import glob, os
+          from fpdf import FPDF
+
+          def to_pdf(txt_path, pdf_path, title=None):
+            pdf = FPDF(format="Letter")
+            pdf.set_auto_page_break(auto=True, margin=15)
+            pdf.add_page()
+            pdf.set_font("Arial", "B", 16)
+            if title:
+              pdf.cell(0, 10, title, ln=True, align="C")
+              pdf.ln(5)
+            pdf.set_font("Arial", size=12)
+            with open(txt_path, "r", encoding="utf-8") as f:
+              for para in f.read().split("\n\n"):
+                para = para.strip()
+                if para:
+                  pdf.multi_cell(0, 6, para)
+                  pdf.ln(2)
+            pdf.output(pdf_path)
+
+          # convert all ebook_*.txt from this run
+          for txt in glob.glob("ebook_*.txt"):
+            pdf = txt.replace(".txt", ".pdf")
+            to_pdf(txt, pdf, title=txt.replace("_", " ").replace(".txt","").title())
+            print("✅ PDF:", pdf)
+          PY
+
+      - name: Upload artifacts (txt & pdf)
         uses: actions/upload-artifact@v4
         with:
-          name: generated-ebook
-          path: ebook_*.txt
+          name: ebooks
+          path: |
+            ebook_*.txt
+            ebook_*.pdf
+
+      - name: Gumroad upload (first PDF)
+        if: ${{ secrets.GUMROAD_ACCESS_TOKEN != '' }}
+        env:
+          GUMROAD_ACCESS_TOKEN: ${{ secrets.GUMROAD_ACCESS_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os, glob, requests
+
+          token = os.environ.get("GUMROAD_ACCESS_TOKEN")
+          assert token, "Missing GUMROAD_ACCESS_TOKEN"
+
+          pdfs = sorted(glob.glob("ebook_*.pdf"))
+          if not pdfs:
+            raise SystemExit("No PDFs to upload.")
+          file_path = pdfs[0]
+          title = file_path.replace("_", " ").replace(".pdf","").title()
+          description = "Auto-generated short ebook. Includes intro, bite-size chapters, and a practical checklist."
+          price_cents = "199"  # $1.99 — adjust after testing
+
+          url = "https://api.gumroad.com/v2/products"
+          files = { "product[content]": open(file_path, "rb") }
+          data = {
+            "access_token": token,
+            "product[name]": title,
+            "product[price]": price_cents,
+            "product[description]": description,
+            "product[is_visible]": "true"
+          }
+          resp = requests.post(url, data=data, files=files, timeout=180)
+          print("HTTP", resp.status_code)
+          print("Body:", resp.text[:800])
+          resp.raise_for_status()
+          PY
