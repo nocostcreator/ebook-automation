@@ -8,6 +8,10 @@ jobs:
   run:
     runs-on: ubuntu-latest
 
+    # Map secrets → env once here. No 'if: secrets...' anywhere.
+    env:
+      BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -94,27 +98,29 @@ jobs:
             ebook_*.pdf
 
       # ===== Optional: itch.io publish via butler =====
-      # Add your itch API key in repo Settings → Secrets → Actions: BUTLER_API_KEY
       - name: Install butler
-        if: ${{ secrets.BUTLER_API_KEY != '' }}
         uses: remarkablegames/setup-butler@v2
 
       - name: Push latest PDF to itch.io (non-blocking)
-        if: ${{ secrets.BUTLER_API_KEY != '' }}
+        # No 'if:' here; we gate inside the script using the env var.
+        continue-on-error: true
         env:
-          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
-          ITCH_USER: your_itch_username         # <-- set me once
+          ITCH_USER: your_itch_username         # <-- set this
           ITCH_GAME: auto-ebooks                # <-- created on first push
           CHANNEL: pdf
-        # This step will NOT fail the whole job if publish has issues
-        continue-on-error: true
         run: |
           set -e
-          PDF=$(ls -1t ebook_*.pdf | head -n1)
+          if [ -z "${BUTLER_API_KEY}" ]; then
+            echo "No BUTLER_API_KEY set; skipping itch.io publish."
+            exit 0
+          fi
+
+          PDF=$(ls -1t ebook_*.pdf | head -n1 || true)
           if [ -z "$PDF" ]; then
             echo "No PDF found to publish; skipping."
             exit 0
           fi
+
           VERSION=$(date -u +"%Y.%m.%d.%H%M")
           echo "Pushing $PDF to $ITCH_USER/$ITCH_GAME:$CHANNEL (version $VERSION)"
           butler push "$PDF" "$ITCH_USER/$ITCH_GAME:$CHANNEL" --userversion "$VERSION" || echo "butler push failed (skipping)."
