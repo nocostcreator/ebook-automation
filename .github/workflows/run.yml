@@ -1,11 +1,13 @@
 name: generate-ebook
+
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 13 * * *"
+    - cron: "0 13 * * *"   # daily at 13:00 UTC (09:00 ET)
 
+# Needed so the workflow's GITHUB_TOKEN can create a Release
 permissions:
-  contents: write   # <= allow release creation
+  contents: write
 
 jobs:
   run:
@@ -27,13 +29,12 @@ jobs:
 
       - name: Generate ebook text (no external API)
         run: |
-          set -e
           python - <<'PY'
           import os, datetime
           from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 
           TOPIC = os.environ.get("TOPIC", "Mindfulness for Beginners")
-          MODEL_ID = "distilgpt2"  # tiny & reliable on CPU
+          MODEL_ID = "distilgpt2"
 
           print(f"→ Loading model: {MODEL_ID}")
           tok = AutoTokenizer.from_pretrained(MODEL_ID)
@@ -59,7 +60,6 @@ jobs:
 
       - name: Convert TXT → PDF (Unicode-safe)
         run: |
-          set -e
           python - <<'PY'
           import glob, os
           from fpdf import FPDF  # fpdf2
@@ -84,15 +84,15 @@ jobs:
                       pdf.ln(2)
               pdf.output(pdf_path)
 
-          made_any = False
+          any_pdf = False
           for txt in glob.glob("ebook_*.txt"):
               pdf = txt.replace(".txt", ".pdf")
               title = os.path.basename(txt).replace("_"," ").replace(".txt","").title()
               to_pdf(txt, pdf, title)
               print("✅ PDF:", pdf)
-              made_any = True
+              any_pdf = True
 
-          if not made_any:
+          if not any_pdf:
               raise SystemExit("No TXT files found to convert.")
           PY
 
@@ -104,8 +104,7 @@ jobs:
             ebook_*.txt
             ebook_*.pdf
 
-      # --- Publish PDFs to a GitHub Release for public download links ---
-        - name: Publish PDFs to a GitHub Release
+      - name: Publish PDFs to a GitHub Release
         uses: ncipollo/release-action@v1
         with:
           tag: v-${{ github.run_id }}
