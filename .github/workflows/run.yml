@@ -7,8 +7,6 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-
-    # Map secrets → env once here. No 'if: secrets...' anywhere.
     env:
       BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
 
@@ -21,11 +19,10 @@ jobs:
         with:
           python-version: "3.11"
 
-  - name: Install deps (Transformers CPU + fpdf2)
-  run: |
-    python -m pip install --upgrade pip
-    pip install "transformers>=4.44" "torch>=2.3" tqdm fpdf2
-
+      - name: Install deps (Transformers CPU + fpdf2)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "transformers>=4.44" "torch>=2.3" tqdm fpdf2
 
       - name: Generate ebook text (no external API)
         run: |
@@ -59,48 +56,44 @@ jobs:
           print("✅ Saved", fname)
           PY
 
-- name: Convert TXT → PDF (Unicode-safe)
-  run: |
-    set -e
-    python - <<'PY'
-    import glob, os
-    from fpdf import FPDF  # from fpdf2
+      - name: Convert TXT → PDF (Unicode-safe)
+        run: |
+          set -e
+          python - <<'PY'
+          import glob, os
+          from fpdf import FPDF  # from fpdf2
 
-    # On ubuntu-latest these fonts exist:
-    FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+          FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-    def to_pdf(txt_path, pdf_path, title=None):
-        pdf = FPDF(format="Letter")
-        pdf.add_page()
-        # Register a Unicode font
-        pdf.add_font("DejaVu", "", FONT_PATH, uni=True)
-        pdf.set_font("DejaVu", size=16)
-        if title:
-            pdf.cell(0, 10, title, ln=True, align="C")
-            pdf.ln(5)
-        pdf.set_font("DejaVu", size=12)
-        with open(txt_path, "r", encoding="utf-8") as f:
-            text = f.read()
-        # Split into paragraphs for nicer layout
-        for para in text.split("\n\n"):
-            para = para.strip()
-            if para:
-                pdf.multi_cell(0, 6, para)
-                pdf.ln(2)
-        pdf.output(pdf_path)
+          def to_pdf(txt_path, pdf_path, title=None):
+              pdf = FPDF(format="Letter")
+              pdf.add_page()
+              pdf.add_font("DejaVu", "", FONT_PATH, uni=True)
+              pdf.set_font("DejaVu", size=16)
+              if title:
+                  pdf.cell(0, 10, title, ln=True, align="C")
+                  pdf.ln(5)
+              pdf.set_font("DejaVu", size=12)
+              with open(txt_path, "r", encoding="utf-8") as f:
+                  text = f.read()
+              for para in text.split("\n\n"):
+                  para = para.strip()
+                  if para:
+                      pdf.multi_cell(0, 6, para)
+                      pdf.ln(2)
+              pdf.output(pdf_path)
 
-    made_any = False
-    for txt in glob.glob("ebook_*.txt"):
-        pdf = txt.replace(".txt", ".pdf")
-        title = os.path.basename(txt).replace("_"," ").replace(".txt","").title()
-        to_pdf(txt, pdf, title)
-        print("✅ PDF:", pdf)
-        made_any = True
+          made_any = False
+          for txt in glob.glob("ebook_*.txt"):
+              pdf = txt.replace(".txt", ".pdf")
+              title = os.path.basename(txt).replace("_", " ").replace(".txt", "").title()
+              to_pdf(txt, pdf, title)
+              print("✅ PDF:", pdf)
+              made_any = True
 
-    if not made_any:
-        raise SystemExit("No TXT files found to convert.")
-    PY
-
+          if not made_any:
+              raise SystemExit("No TXT files found to convert.")
+          PY
 
       - name: Upload artifacts (TXT & PDF)
         uses: actions/upload-artifact@v4
@@ -110,16 +103,14 @@ jobs:
             ebook_*.txt
             ebook_*.pdf
 
-      # ===== Optional: itch.io publish via butler =====
       - name: Install butler
         uses: remarkablegames/setup-butler@v2
 
       - name: Push latest PDF to itch.io (non-blocking)
-        # No 'if:' here; we gate inside the script using the env var.
         continue-on-error: true
         env:
-          ITCH_USER: your_itch_username         # <-- set this
-          ITCH_GAME: auto-ebooks                # <-- created on first push
+          ITCH_USER: your_itch_username       # <== replace this
+          ITCH_GAME: auto-ebooks              # <== will be created on first push
           CHANNEL: pdf
         run: |
           set -e
