@@ -2,7 +2,10 @@ name: generate-ebook
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 13 * * *"   # daily 13:00 UTC (09:00 ET)
+    - cron: "0 13 * * *"
+
+permissions:
+  contents: write   # <= allow release creation
 
 jobs:
   run:
@@ -102,18 +105,14 @@ jobs:
             ebook_*.pdf
 
       # --- Publish PDFs to a GitHub Release for public download links ---
-      - name: Create release
-        id: create_release
-        uses: softprops/action-gh-release@v2
+        - name: Publish PDFs to a GitHub Release
+        uses: ncipollo/release-action@v1
         with:
-          tag_name: v-${{ github.run_id }}
+          tag: v-${{ github.run_id }}
           name: "Auto ebook run ${{ github.run_id }}"
-          draft: false
-          prerelease: false
-
-      - name: Upload PDFs to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v-${{ github.run_id }}
-          files: |
-            ebook_*.pdf
+          body: "Automated build with TXT and PDF assets."
+          artifacts: "ebook_*.pdf"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          artifactErrorsFailBuild: false
+          makeLatest: false
