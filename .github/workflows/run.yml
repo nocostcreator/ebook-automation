@@ -89,7 +89,6 @@ jobs:
             ebook_*.txt
             ebook_*.pdf
 
-      -      # Make the secret available as an env var at the job level
       - name: Export GUMROAD token to env
         run: echo "GUMROAD_ACCESS_TOKEN=${{ secrets.GUMROAD_ACCESS_TOKEN }}" >> $GITHUB_ENV
 
