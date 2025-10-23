@@ -89,24 +89,30 @@ jobs:
             ebook_*.txt
             ebook_*.pdf
 
+      -      # Make the secret available as an env var at the job level
+      - name: Export GUMROAD token to env
+        run: echo "GUMROAD_ACCESS_TOKEN=${{ secrets.GUMROAD_ACCESS_TOKEN }}" >> $GITHUB_ENV
+
       - name: Gumroad upload (first PDF)
-        if: ${{ secrets.GUMROAD_ACCESS_TOKEN != '' }}
+        # Use env.* in the condition instead of secrets.*
+        if: ${{ env.GUMROAD_ACCESS_TOKEN != '' }}
         env:
-          GUMROAD_ACCESS_TOKEN: ${{ secrets.GUMROAD_ACCESS_TOKEN }}
+          GUMROAD_ACCESS_TOKEN: ${{ env.GUMROAD_ACCESS_TOKEN }}
         run: |
           python - <<'PY'
           import os, glob, requests
 
           token = os.environ.get("GUMROAD_ACCESS_TOKEN")
-          assert token, "Missing GUMROAD_ACCESS_TOKEN"
+          if not token:
+              raise SystemExit("No GUMROAD_ACCESS_TOKEN; skipping upload.")
 
           pdfs = sorted(glob.glob("ebook_*.pdf"))
           if not pdfs:
-            raise SystemExit("No PDFs to upload.")
+              raise SystemExit("No PDFs to upload.")
           file_path = pdfs[0]
           title = file_path.replace("_", " ").replace(".pdf","").title()
           description = "Auto-generated short ebook. Includes intro, bite-size chapters, and a practical checklist."
-          price_cents = "199"  # $1.99 — adjust after testing
+          price_cents = "199"
 
           url = "https://api.gumroad.com/v2/products"
           files = { "product[content]": open(file_path, "rb") }
