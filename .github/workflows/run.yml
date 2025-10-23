@@ -21,10 +21,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps (Transformers CPU + FPDF)
-        run: |
-          python -m pip install --upgrade pip
-          pip install "transformers>=4.44" "torch>=2.3" tqdm fpdf
+  - name: Install deps (Transformers CPU + fpdf2)
+  run: |
+    python -m pip install --upgrade pip
+    pip install "transformers>=4.44" "torch>=2.3" tqdm fpdf2
+
 
       - name: Generate ebook text (no external API)
         run: |
@@ -58,36 +59,48 @@ jobs:
           print("✅ Saved", fname)
           PY
 
-      - name: Convert TXT → PDF
-        run: |
-          set -e
-          python - <<'PY'
-          import glob
-          from fpdf import FPDF
+- name: Convert TXT → PDF (Unicode-safe)
+  run: |
+    set -e
+    python - <<'PY'
+    import glob, os
+    from fpdf import FPDF  # from fpdf2
 
-          made_any = False
-          for txt in glob.glob("ebook_*.txt"):
-            pdf = txt.replace(".txt",".pdf")
-            pdfdoc = FPDF(format="Letter")
-            pdfdoc.set_auto_page_break(True, 15)
-            pdfdoc.add_page()
-            pdfdoc.set_font("Arial", "B", 16)
-            pdfdoc.cell(0,10,txt.replace("_"," ").replace(".txt","").title(),ln=True,align="C")
-            pdfdoc.ln(5)
-            pdfdoc.set_font("Arial", size=12)
-            with open(txt, encoding="utf-8") as f:
-              for para in f.read().split("\n\n"):
-                para = para.strip()
-                if para:
-                  pdfdoc.multi_cell(0,6,para)
-                  pdfdoc.ln(2)
-            pdfdoc.output(pdf)
-            print("✅ PDF:", pdf)
-            made_any = True
+    # On ubuntu-latest these fonts exist:
+    FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-          if not made_any:
-            raise SystemExit("No TXT files found to convert.")
-          PY
+    def to_pdf(txt_path, pdf_path, title=None):
+        pdf = FPDF(format="Letter")
+        pdf.add_page()
+        # Register a Unicode font
+        pdf.add_font("DejaVu", "", FONT_PATH, uni=True)
+        pdf.set_font("DejaVu", size=16)
+        if title:
+            pdf.cell(0, 10, title, ln=True, align="C")
+            pdf.ln(5)
+        pdf.set_font("DejaVu", size=12)
+        with open(txt_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        # Split into paragraphs for nicer layout
+        for para in text.split("\n\n"):
+            para = para.strip()
+            if para:
+                pdf.multi_cell(0, 6, para)
+                pdf.ln(2)
+        pdf.output(pdf_path)
+
+    made_any = False
+    for txt in glob.glob("ebook_*.txt"):
+        pdf = txt.replace(".txt", ".pdf")
+        title = os.path.basename(txt).replace("_"," ").replace(".txt","").title()
+        to_pdf(txt, pdf, title)
+        print("✅ PDF:", pdf)
+        made_any = True
+
+    if not made_any:
+        raise SystemExit("No TXT files found to convert.")
+    PY
+
 
       - name: Upload artifacts (TXT & PDF)
         uses: actions/upload-artifact@v4
