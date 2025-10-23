@@ -7,8 +7,10 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -18,16 +20,17 @@ jobs:
       - name: Install deps (Transformers CPU + FPDF)
         run: |
           python -m pip install --upgrade pip
-          pip install "transformers>=4.44" "torch>=2.3" tqdm fpdf requests
+          pip install "transformers>=4.44" "torch>=2.3" tqdm fpdf
 
-      - name: Generate ebook text (no API)
+      - name: Generate ebook text (no external API)
         run: |
+          set -e
           python - <<'PY'
           import datetime
           from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 
-          TOPIC = "Mindfulness for Beginners"      # <- change topics later
-          MODEL_ID = "distilgpt2"                  # small & fast on CPU
+          TOPIC = "Mindfulness for Beginners"        # change freely
+          MODEL_ID = "distilgpt2"                    # tiny & reliable
 
           print(f"→ Loading model: {MODEL_ID}")
           tok = AutoTokenizer.from_pretrained(MODEL_ID)
@@ -53,35 +56,36 @@ jobs:
 
       - name: Convert TXT → PDF
         run: |
+          set -e
           python - <<'PY'
-          import glob, os
+          import glob
           from fpdf import FPDF
 
-          def to_pdf(txt_path, pdf_path, title=None):
-            pdf = FPDF(format="Letter")
-            pdf.set_auto_page_break(auto=True, margin=15)
-            pdf.add_page()
-            pdf.set_font("Arial", "B", 16)
-            if title:
-              pdf.cell(0, 10, title, ln=True, align="C")
-              pdf.ln(5)
-            pdf.set_font("Arial", size=12)
-            with open(txt_path, "r", encoding="utf-8") as f:
+          made_any = False
+          for txt in glob.glob("ebook_*.txt"):
+            pdf = txt.replace(".txt",".pdf")
+            pdfdoc = FPDF(format="Letter")
+            pdfdoc.set_auto_page_break(True, 15)
+            pdfdoc.add_page()
+            pdfdoc.set_font("Arial", "B", 16)
+            pdfdoc.cell(0,10,txt.replace("_"," ").replace(".txt","").title(),ln=True,align="C")
+            pdfdoc.ln(5)
+            pdfdoc.set_font("Arial", size=12)
+            with open(txt, encoding="utf-8") as f:
               for para in f.read().split("\n\n"):
                 para = para.strip()
                 if para:
-                  pdf.multi_cell(0, 6, para)
-                  pdf.ln(2)
-            pdf.output(pdf_path)
-
-          # convert all ebook_*.txt from this run
-          for txt in glob.glob("ebook_*.txt"):
-            pdf = txt.replace(".txt", ".pdf")
-            to_pdf(txt, pdf, title=txt.replace("_", " ").replace(".txt","").title())
+                  pdfdoc.multi_cell(0,6,para)
+                  pdfdoc.ln(2)
+            pdfdoc.output(pdf)
             print("✅ PDF:", pdf)
+            made_any = True
+
+          if not made_any:
+            raise SystemExit("No TXT files found to convert.")
           PY
 
-      - name: Upload artifacts (txt & pdf)
+      - name: Upload artifacts (TXT & PDF)
         uses: actions/upload-artifact@v4
         with:
           name: ebooks
@@ -89,41 +93,28 @@ jobs:
             ebook_*.txt
             ebook_*.pdf
 
-      - name: Export GUMROAD token to env
-        run: echo "GUMROAD_ACCESS_TOKEN=${{ secrets.GUMROAD_ACCESS_TOKEN }}" >> $GITHUB_ENV
+      # ===== Optional: itch.io publish via butler =====
+      # Add your itch API key in repo Settings → Secrets → Actions: BUTLER_API_KEY
+      - name: Install butler
+        if: ${{ secrets.BUTLER_API_KEY != '' }}
+        uses: remarkablegames/setup-butler@v2
 
-      - name: Gumroad upload (first PDF)
-        # Use env.* in the condition instead of secrets.*
-        if: ${{ env.GUMROAD_ACCESS_TOKEN != '' }}
+      - name: Push latest PDF to itch.io (non-blocking)
+        if: ${{ secrets.BUTLER_API_KEY != '' }}
         env:
-          GUMROAD_ACCESS_TOKEN: ${{ env.GUMROAD_ACCESS_TOKEN }}
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+          ITCH_USER: your_itch_username         # <-- set me once
+          ITCH_GAME: auto-ebooks                # <-- created on first push
+          CHANNEL: pdf
+        # This step will NOT fail the whole job if publish has issues
+        continue-on-error: true
         run: |
-          python - <<'PY'
-          import os, glob, requests
-
-          token = os.environ.get("GUMROAD_ACCESS_TOKEN")
-          if not token:
-              raise SystemExit("No GUMROAD_ACCESS_TOKEN; skipping upload.")
-
-          pdfs = sorted(glob.glob("ebook_*.pdf"))
-          if not pdfs:
-              raise SystemExit("No PDFs to upload.")
-          file_path = pdfs[0]
-          title = file_path.replace("_", " ").replace(".pdf","").title()
-          description = "Auto-generated short ebook. Includes intro, bite-size chapters, and a practical checklist."
-          price_cents = "199"
-
-          url = "https://api.gumroad.com/v2/products"
-          files = { "product[content]": open(file_path, "rb") }
-          data = {
-            "access_token": token,
-            "product[name]": title,
-            "product[price]": price_cents,
-            "product[description]": description,
-            "product[is_visible]": "true"
-          }
-          resp = requests.post(url, data=data, files=files, timeout=180)
-          print("HTTP", resp.status_code)
-          print("Body:", resp.text[:800])
-          resp.raise_for_status()
-          PY
+          set -e
+          PDF=$(ls -1t ebook_*.pdf | head -n1)
+          if [ -z "$PDF" ]; then
+            echo "No PDF found to publish; skipping."
+            exit 0
+          fi
+          VERSION=$(date -u +"%Y.%m.%d.%H%M")
+          echo "Pushing $PDF to $ITCH_USER/$ITCH_GAME:$CHANNEL (version $VERSION)"
+          butler push "$PDF" "$ITCH_USER/$ITCH_GAME:$CHANNEL" --userversion "$VERSION" || echo "butler push failed (skipping)."
