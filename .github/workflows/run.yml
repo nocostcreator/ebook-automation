@@ -7,8 +7,6 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    env:
-      BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
 
     steps:
       - name: Checkout
@@ -28,11 +26,11 @@ jobs:
         run: |
           set -e
           python - <<'PY'
-          import datetime
+          import os, datetime
           from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 
-          TOPIC = "Mindfulness for Beginners"        # change freely
-          MODEL_ID = "distilgpt2"                    # tiny & reliable
+          TOPIC = os.environ.get("TOPIC", "Mindfulness for Beginners")
+          MODEL_ID = "distilgpt2"  # tiny & reliable on CPU
 
           print(f"→ Loading model: {MODEL_ID}")
           tok = AutoTokenizer.from_pretrained(MODEL_ID)
@@ -61,7 +59,7 @@ jobs:
           set -e
           python - <<'PY'
           import glob, os
-          from fpdf import FPDF  # from fpdf2
+          from fpdf import FPDF  # fpdf2
 
           FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
@@ -86,7 +84,7 @@ jobs:
           made_any = False
           for txt in glob.glob("ebook_*.txt"):
               pdf = txt.replace(".txt", ".pdf")
-              title = os.path.basename(txt).replace("_", " ").replace(".txt", "").title()
+              title = os.path.basename(txt).replace("_"," ").replace(".txt","").title()
               to_pdf(txt, pdf, title)
               print("✅ PDF:", pdf)
               made_any = True
@@ -103,28 +101,19 @@ jobs:
             ebook_*.txt
             ebook_*.pdf
 
-      - name: Install butler
-        uses: remarkablegames/setup-butler@v2
+      # --- Publish PDFs to a GitHub Release for public download links ---
+      - name: Create release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v-${{ github.run_id }}
+          name: "Auto ebook run ${{ github.run_id }}"
+          draft: false
+          prerelease: false
 
-      - name: Push latest PDF to itch.io (non-blocking)
-        continue-on-error: true
-        env:
-          ITCH_USER: your_itch_username       # <== replace this
-          ITCH_GAME: auto-ebooks              # <== will be created on first push
-          CHANNEL: pdf
-        run: |
-          set -e
-          if [ -z "${BUTLER_API_KEY}" ]; then
-            echo "No BUTLER_API_KEY set; skipping itch.io publish."
-            exit 0
-          fi
-
-          PDF=$(ls -1t ebook_*.pdf | head -n1 || true)
-          if [ -z "$PDF" ]; then
-            echo "No PDF found to publish; skipping."
-            exit 0
-          fi
-
-          VERSION=$(date -u +"%Y.%m.%d.%H%M")
-          echo "Pushing $PDF to $ITCH_USER/$ITCH_GAME:$CHANNEL (version $VERSION)"
-          butler push "$PDF" "$ITCH_USER/$ITCH_GAME:$CHANNEL" --userversion "$VERSION" || echo "butler push failed (skipping)."
+      - name: Upload PDFs to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v-${{ github.run_id }}
+          files: |
+            ebook_*.pdf
