@@ -1,13 +1,12 @@
-name: generate-ebook
+name: generate-ebooks
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "0 13 * * *"   # daily at 13:00 UTC (09:00 ET)
 
-# Needed so the workflow's GITHUB_TOKEN can create a Release
 permissions:
-  contents: write
+  contents: write   # needed for committing to Pages and creating Releases
 
 jobs:
   run:
@@ -16,6 +15,65 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Ensure docs/ exists with starter page
+        run: |
+          mkdir -p docs
+          if [ ! -f docs/index.html ]; then
+            cat > docs/index.html <<'HTML'
+            <!doctype html>
+            <html lang="en">
+            <head>
+              <meta charset="utf-8"/>
+              <meta name="viewport" content="width=device-width, initial-scale=1"/>
+              <title>Auto Ebooks</title>
+              <style>
+                body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0f172a;color:#e2e8f0}
+                header{padding:28px 16px;text-align:center;background:#111827}
+                h1{margin:0;font-size:28px}
+                .wrap{max-width:980px;margin:0 auto;padding:20px}
+                .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+                .card{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:16px}
+                .title{font-weight:700;margin:0 0 8px;font-size:18px}
+                .meta{font-size:12px;opacity:.8;margin-bottom:8px}
+                .btns a{display:inline-block;margin-right:8px;margin-top:8px;padding:8px 12px;border-radius:10px;border:1px solid #374151;color:#e5e7eb;text-decoration:none}
+                .btns a:hover{background:#1f2937}
+                footer{opacity:.7;text-align:center;padding:24px}
+              </style>
+            </head>
+            <body>
+              <header>
+                <h1>Auto Ebooks</h1>
+                <p style="opacity:.8;margin-top:8px">Fresh short ebooks generated daily.</p>
+              </header>
+              <div class="wrap">
+                <div id="catalog" class="grid"></div>
+              </div>
+              <footer>Powered by an automated GitHub Actions pipeline.</footer>
+              <script>
+                // Replaced by the workflow on each run:
+                const CATALOG = [];
+                const PAYMENT_LINK = ""; // optional Stripe Payment Link
+                const grid = document.getElementById('catalog');
+                if (!CATALOG.length) {
+                  grid.innerHTML = "<p>No ebooks yet. Check back soon.</p>";
+                } else {
+                  grid.innerHTML = CATALOG.map(item => `
+                    <div class="card">
+                      <h2 class="title">${item.title}</h2>
+                      <div class="meta">${item.date} • ~${item.words} words</div>
+                      <div class="btns">
+                        <a href="${item.pdf_url}" target="_blank">Download PDF</a>
+                        ${PAYMENT_LINK ? `<a href="${PAYMENT_LINK}" target="_blank">Support / Buy</a>` : ""}
+                      </div>
+                    </div>
+                  `).join('');
+                }
+              </script>
+            </body>
+            </html>
+            HTML
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -27,35 +85,39 @@ jobs:
           python -m pip install --upgrade pip
           pip install "transformers>=4.44" "torch>=2.3" tqdm fpdf2
 
-      - name: Generate ebook text (no external API)
+      - name: Generate ebooks from topics.txt
         run: |
           python - <<'PY'
-          import os, datetime
+          import os, re, datetime, json
+          from pathlib import Path
           from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 
-          TOPIC = os.environ.get("TOPIC", "Mindfulness for Beginners")
-          MODEL_ID = "distilgpt2"
+          topics_path = Path("topics.txt")
+          if not topics_path.exists():
+            raise SystemExit("Missing topics.txt in repo root. Add one topic per line.")
 
-          print(f"→ Loading model: {MODEL_ID}")
+          MODEL_ID = "distilgpt2"  # small & CPU-friendly
           tok = AutoTokenizer.from_pretrained(MODEL_ID)
           mdl = AutoModelForCausalLM.from_pretrained(MODEL_ID)
           gen = pipeline("text-generation", model=mdl, tokenizer=tok, device=-1)
 
-          prompt = (
-              f"Write a concise, beginner-friendly short ebook about: {TOPIC}.\n"
-              "Include a short intro, 4–6 brief chapters (1–2 paragraphs each),\n"
-              "and an actionable checklist at the end.\n"
-          )
+          out = []
+          ts_base = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+          for i, topic in enumerate([t.strip() for t in topics_path.read_text(encoding="utf-8").splitlines() if t.strip()]):
+              prompt = (
+                  f"Write a concise, beginner-friendly short ebook about: {topic}.\n"
+                  "Include a short intro, 4–6 brief chapters (1–2 paragraphs each),\n"
+                  "and an actionable checklist at the end.\n"
+              )
+              print(f"→ Generating: {topic}")
+              text = gen(prompt, max_new_tokens=450, do_sample=True, temperature=0.8, top_p=0.95)[0]["generated_text"]
+              safe = re.sub(r'[^A-Za-z0-9_-]+', '_', topic)[:60].strip('_')
+              fname = f"ebook_{ts_base}_{i+1:02d}_{safe}.txt"
+              Path(fname).write_text(text, encoding="utf-8")
+              out.append({"topic": topic, "file": fname, "words": len(text.split())})
+              print("✅ Saved", fname)
 
-          print("→ Generating…")
-          out = gen(prompt, max_new_tokens=400, do_sample=True, temperature=0.8, top_p=0.95)
-          text = out[0]["generated_text"]
-
-          ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-          fname = f"ebook_{ts}.txt"
-          with open(fname, "w", encoding="utf-8") as f:
-              f.write(text)
-          print("✅ Saved", fname)
+          Path("generated_index.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
           PY
 
       - name: Convert TXT → PDF (Unicode-safe)
@@ -84,34 +146,74 @@ jobs:
                       pdf.ln(2)
               pdf.output(pdf_path)
 
-          any_pdf = False
-          for txt in glob.glob("ebook_*.txt"):
+          for txt in sorted(glob.glob("ebook_*.txt")):
               pdf = txt.replace(".txt", ".pdf")
               title = os.path.basename(txt).replace("_"," ").replace(".txt","").title()
               to_pdf(txt, pdf, title)
               print("✅ PDF:", pdf)
-              any_pdf = True
-
-          if not any_pdf:
-              raise SystemExit("No TXT files found to convert.")
           PY
 
-      - name: Upload artifacts (TXT & PDF)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ebooks
-          path: |
-            ebook_*.txt
-            ebook_*.pdf
-
-      - name: Publish PDFs to a GitHub Release
+      - name: Create GitHub Release with PDFs
         uses: ncipollo/release-action@v1
         with:
           tag: v-${{ github.run_id }}
-          name: "Auto ebook run ${{ github.run_id }}"
-          body: "Automated build with TXT and PDF assets."
+          name: "Auto ebooks run ${{ github.run_id }}"
+          body: "Automated release with PDFs."
           artifacts: "ebook_*.pdf"
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true
           artifactErrorsFailBuild: false
           makeLatest: false
+
+      - name: Build storefront catalog (inject latest into docs/index.html)
+        run: |
+          python - <<'PY'
+          import json, os, re, requests, datetime
+          from pathlib import Path
+
+          owner_repo = os.environ["GITHUB_REPOSITORY"]  # e.g. user/repo
+          token = os.environ["GITHUB_TOKEN"]
+
+          # Get the release we just created
+          url = f"https://api.github.com/repos/{owner_repo}/releases/tags/v-{os.environ['GITHUB_RUN_ID']}"
+          r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
+          r.raise_for_status()
+          rel = r.json()
+
+          items = []
+          for a in rel.get("assets", []):
+            if a["name"].lower().endswith(".pdf"):
+              # Try to reconstruct a friendly title from filename
+              base = re.sub(r"\.pdf$", "", a["name"], flags=re.I)
+              title = re.sub(r"ebook_\d{8}_\d{6}_\d{2}_", "", base)
+              title = title.replace("_", " ").title()
+              items.append({
+                "title": title if title else a["name"],
+                "pdf_url": a["browser_download_url"],
+                "date": datetime.datetime.utcnow().strftime("%Y-%m-%d"),
+                "words": "≈"  # optional; we could read generated_index.json if desired
+              })
+
+          # Inject into docs/index.html replacing the CATALOG array
+          html = Path("docs/index.html").read_text(encoding="utf-8")
+          import json as _json
+          catalog_js = "const CATALOG = " + _json.dumps(items, ensure_ascii=False, indent=2) + ";"
+          new = re.sub(r"const CATALOG = \[[\s\S]*?\];", catalog_js, html)
+          # Optional: set a Stripe Payment Link (set once below if you have one)
+          payment_link = os.environ.get("PAYMENT_LINK", "")
+          new = re.sub(r'const PAYMENT_LINK = ".*?";', f'const PAYMENT_LINK = "{payment_link}";', new)
+          Path("docs/index.html").write_text(new, encoding="utf-8")
+          print("✅ Updated docs/index.html with latest catalog.")
+          PY
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: set a Stripe Payment Link to show a "Support / Buy" button
+          PAYMENT_LINK: ""
+
+      - name: Commit storefront change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html
+          git commit -m "Update storefront catalog [skip ci]" || echo "No changes to commit"
+          git push
